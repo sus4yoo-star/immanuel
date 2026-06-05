@@ -1,0 +1,89 @@
+name: 주간 코드 점검
+
+on:
+  schedule:
+    # 매주 월요일 00:00 UTC = 09:00 KST
+    - cron: '0 0 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  weekly-review:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 저장소 체크아웃
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: 날짜 계산 (KST)
+        id: date
+        run: |
+          DATE=$(TZ='Asia/Seoul' date +'%Y-%m-%d')
+          echo "date=${DATE}" >> $GITHUB_OUTPUT
+          echo "branch=weekly-review/${DATE}" >> $GITHUB_OUTPUT
+
+      - name: 브랜치 생성
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git checkout -b ${{ steps.date.outputs.branch }}
+          mkdir -p reports
+
+      - name: Claude 주간 점검 실행
+        uses: anthropics/claude-code-action@beta
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          prompt: |
+            오늘은 ${{ steps.date.outputs.date }} (월요일)입니다. 임마누엘 저장소 주간 점검을 수행해주세요.
+
+            ## 점검 규칙
+            1. main 브랜치 코드를 읽고 새로 발견된 버그·미완성·개선점·보안 이슈를 정리한다.
+            2. 출시/운영 관점에서 이번 주에 하면 좋을 일을 우선순위로 제안한다.
+            3. 비개발자가 이해할 수 있는 한국어로 작성한다.
+            4. 코드는 수정하지 않는다.
+            5. 결과를 `reports/weekly-${{ steps.date.outputs.date }}.md` 에 저장한다.
+
+            ## 리포트 구조
+            - 한 줄 요약
+            - 버그·오작동 위험 (🔴)
+            - 미완성 기능 (🟡)
+            - 개선이 필요한 부분 (🟠)
+            - 보안 점검 (🛡️)
+            - 운영 관점 우선 과제 표 (순위·과제·이유·난이도)
+            - 잘 된 점 (✅)
+
+            파일을 저장한 후 변경 사항을 커밋해주세요.
+
+      - name: 변경사항 커밋
+        run: |
+          git add reports/
+          git diff --staged --quiet || git commit -m "리포트: 주간 점검 ${{ steps.date.outputs.date }}"
+
+      - name: 브랜치 푸시
+        run: git push -u origin ${{ steps.date.outputs.branch }}
+
+      - name: PR 생성
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh pr create \
+            --base main \
+            --head ${{ steps.date.outputs.branch }} \
+            --title "📋 주간 점검 리포트 — ${{ steps.date.outputs.date }}" \
+            --body "$(cat <<'EOF'
+          ## 주간 코드 점검 리포트
+
+          - **점검 일자**: ${{ steps.date.outputs.date }} (월)
+          - **점검 범위**: main 브랜치 전체
+          - **작성**: Claude AI 자동 점검 시스템
+
+          > 코드 수정 없음. 리포트 파일(`reports/weekly-${{ steps.date.outputs.date }}.md`)만 포함됩니다.
+
+          리포트 내용을 확인한 뒤 머지해 주세요.
+          EOF
+          )"
