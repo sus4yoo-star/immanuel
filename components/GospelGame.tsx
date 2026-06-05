@@ -113,6 +113,37 @@ const SCENES: Record<string, Scene> = {
 
 const START = "c1_1";
 const DEV = process.env.NODE_ENV !== "production";
+const PROGRESS_KEY = "immanuel_progress";
+
+const Stars = () => (
+  <div className="absolute inset-0 overflow-hidden pointer-events-none">
+    {Array.from({ length: 40 }).map((_, i) => (
+      <span key={i} className="absolute rounded-full" style={{ top: ((i * 53) % 100) + "%", left: ((i * 37) % 100) + "%", width: i % 5 === 0 ? 3 : 2, height: i % 5 === 0 ? 3 : 2, background: GOLD, opacity: 0.15 + ((i * 7) % 50) / 100 }} />
+    ))}
+  </div>
+);
+
+const ScriptureCard = ({ refs, verses }: { refs: string[]; verses: Record<string, string> }) => (
+  <div className="mt-8 space-y-4">
+    {refs.map((r) => {
+      const body = verses[r];
+      return (
+        <div key={r} className="p-5 rounded-xl border-l-2" style={{ borderColor: GOLD, background: "rgba(216,179,100,0.06)" }}>
+          <p className="text-[10px] tracking-[0.25em] mb-2" style={{ color: GOLD }}>말씀 · 개역개정</p>
+          {body ? <p className="font-serif text-slate-100 leading-relaxed">{body}</p> : <p className="text-slate-500 text-sm italic leading-relaxed">［개역개정 본문을 VERSES에 넣어 주세요］</p>}
+          <p className="text-xs mt-3 tracking-wider" style={{ color: GOLD }}>— {r}</p>
+        </div>
+      );
+    })}
+  </div>
+);
+
+const ReflectBlock = ({ text }: { text: string }) => (
+  <div className="mt-6 px-5 py-4 rounded-xl" style={{ background: "rgba(255,255,255,0.03)" }}>
+    <p className="text-[10px] tracking-[0.25em] mb-2 text-slate-400">✦ 묵상</p>
+    <p className="text-slate-300 italic leading-relaxed text-[15px]">{text}</p>
+  </div>
+);
 
 export default function GospelGame() {
   const [started, setStarted] = useState(false);
@@ -126,12 +157,38 @@ export default function GospelGame() {
   const [copied, setCopied] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
 
+  const [restored, setRestored] = useState(false);
+  const [resumable, setResumable] = useState<{ sceneId: string; collected: Collect[] } | null>(null);
   const scene = SCENES[sceneId];
-  const chapter = CHAPTERS[scene.ch];
+  const chapter = scene ? CHAPTERS[scene.ch] : null;
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: 0, behavior: "smooth" });
   }, [sceneId, started]);
+
+  // 저장된 진행 상황 확인 (재방문 시 '이어서 읽기' 제안용 — 자동 시작은 하지 않음)
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(PROGRESS_KEY);
+      if (raw) {
+        const saved = JSON.parse(raw);
+        if (saved && saved.started && typeof saved.sceneId === "string" && SCENES[saved.sceneId] && saved.sceneId !== START) {
+          // SSR 안전: 초기 렌더 후 localStorage에서 한 번만 읽어 둔다
+          // eslint-disable-next-line react-hooks/set-state-in-effect
+          setResumable({ sceneId: saved.sceneId, collected: Array.isArray(saved.collected) ? saved.collected : [] });
+        }
+      }
+    } catch {}
+    setRestored(true);
+  }, []);
+
+  // 진행 상황 저장 (이야기 진행 중에만 — 시작 화면이 저장본을 덮어쓰지 않도록)
+  useEffect(() => {
+    if (!restored || !started) return;
+    try {
+      localStorage.setItem(PROGRESS_KEY, JSON.stringify({ sceneId, collected, started }));
+    } catch {}
+  }, [sceneId, collected, started, restored]);
 
   useEffect(() => {
     if (!DEV) return;
@@ -139,57 +196,72 @@ export default function GospelGame() {
       const raw = localStorage.getItem("nkrv_verses");
       if (raw) {
         const saved = JSON.parse(raw);
+        // SSR 안전: 개발용 편집본을 초기 렌더 후 한 번 불러온다
+        /* eslint-disable react-hooks/set-state-in-effect */
         setVerses({ ...VERSES, ...saved });
         setDraft({ ...VERSES, ...saved });
+        /* eslint-enable react-hooks/set-state-in-effect */
       }
     } catch {}
   }, []);
 
   useEffect(() => {
-    if (scene.collect) {
+    // 장면 진입 시 해당 말씀을 묵상 노트에 누적한다 (중복 방지)
+    if (scene?.collect) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setCollected((prev) =>
         prev.some((v) => v.title === scene.collect!.title) ? prev : [...prev, scene.collect!]
       );
     }
+    // sceneId가 바뀔 때만 실행 (scene은 sceneId에서 파생)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sceneId]);
 
   const choose = (next: string) => setSceneId(next);
-  const restart = () => { setSceneId(START); setCollected([]); setStarted(false); setShowVerses(false); };
+  const beginFresh = () => {
+    setSceneId(START); setCollected([]); setResumable(null); setStarted(true);
+  };
+  const resume = () => {
+    if (!resumable) return;
+    setSceneId(resumable.sceneId); setCollected(resumable.collected); setStarted(true);
+  };
+  const restart = () => {
+    setSceneId(START); setCollected([]); setResumable(null); setStarted(false); setShowVerses(false);
+    try { localStorage.removeItem(PROGRESS_KEY); } catch {}
+  };
+
+  const shareNotes = async () => {
+    if (collected.length === 0) return;
+    const body =
+      "임마누엘 — 마음에 새긴 말씀\n\n" +
+      collected.map((v) => `✦ ${v.title} (${v.ref})\n  ${v.note}`).join("\n\n");
+    try {
+      if (navigator.share) {
+        await navigator.share({ title: "임마누엘 묵상 노트", text: body });
+      } else {
+        await navigator.clipboard.writeText(body);
+        setCopied(true);
+        setTimeout(() => setCopied(false), 1500);
+      }
+    } catch {}
+  };
   const saveVerses = () => {
     setVerses(draft);
     try { localStorage.setItem("nkrv_verses", JSON.stringify(draft)); } catch {}
     setEditing(false);
   };
 
-  const Stars = () => (
-    <div className="absolute inset-0 overflow-hidden pointer-events-none">
-      {Array.from({ length: 40 }).map((_, i) => (
-        <span key={i} className="absolute rounded-full" style={{ top: ((i * 53) % 100) + "%", left: ((i * 37) % 100) + "%", width: i % 5 === 0 ? 3 : 2, height: i % 5 === 0 ? 3 : 2, background: GOLD, opacity: 0.15 + ((i * 7) % 50) / 100 }} />
-      ))}
-    </div>
-  );
-
-  const ScriptureCard = ({ refs }: { refs: string[] }) => (
-    <div className="mt-8 space-y-4">
-      {refs.map((r) => {
-        const body = verses[r];
-        return (
-          <div key={r} className="p-5 rounded-xl border-l-2" style={{ borderColor: GOLD, background: "rgba(216,179,100,0.06)" }}>
-            <p className="text-[10px] tracking-[0.25em] mb-2" style={{ color: GOLD }}>말씀 · 개역개정</p>
-            {body ? <p className="font-serif text-slate-100 leading-relaxed">{body}</p> : <p className="text-slate-500 text-sm italic leading-relaxed">［개역개정 본문을 VERSES에 넣어 주세요］</p>}
-            <p className="text-xs mt-3 tracking-wider" style={{ color: GOLD }}>— {r}</p>
-          </div>
-        );
-      })}
-    </div>
-  );
-
-  const ReflectBlock = ({ text }: { text: string }) => (
-    <div className="mt-6 px-5 py-4 rounded-xl" style={{ background: "rgba(255,255,255,0.03)" }}>
-      <p className="text-[10px] tracking-[0.25em] mb-2 text-slate-400">✦ 묵상</p>
-      <p className="text-slate-300 italic leading-relaxed text-[15px]">{text}</p>
-    </div>
-  );
+  if (!scene || !chapter) {
+    return (
+      <div className="relative w-full min-h-[100dvh] flex items-center justify-center px-6 text-center" style={{ background: "linear-gradient(" + NAVY2 + ", " + NAVY + ")" }}>
+        <div className="max-w-sm">
+          <div className="text-4xl mb-4" style={{ color: GOLD }}>✦</div>
+          <p className="text-slate-300 leading-relaxed mb-6">이야기의 길을 찾지 못했습니다. 처음부터 다시 걸어 볼까요?</p>
+          <button onClick={restart} className="px-8 py-3 rounded-full font-serif" style={{ background: GOLD, color: NAVY }}>처음으로</button>
+        </div>
+      </div>
+    );
+  }
 
   if (editing) {
     const exportCode = "const VERSES: Record<string, string> = {\n" + Object.keys(VERSES).map((r) => "  " + JSON.stringify(r) + ": " + JSON.stringify(draft[r] || "") + ",").join("\n") + "\n};";
@@ -236,7 +308,15 @@ export default function GospelGame() {
           <p className="text-slate-400 text-xs mb-5">하나님이 우리와 함께 계시다</p>
           <h1 className="font-serif text-2xl sm:text-3xl text-white leading-snug mb-5">별에서 십자가,<br />그리고 다시 오심</h1>
           <p className="text-slate-300 text-sm leading-relaxed mb-6">한 목자의 아이가 되어 예수님의 탄생부터 사역과 십자가, 부활과 다시 오심의 약속까지 그 길을 함께 걷습니다.</p>
-          <button onClick={() => setStarted(true)} className="px-10 py-3 rounded-full font-serif text-base" style={{ background: GOLD, color: NAVY }}>이야기를 시작한다</button>
+          {resumable ? (
+            <div className="flex flex-col items-center gap-3">
+              <button onClick={resume} className="px-10 py-3 rounded-full font-serif text-base" style={{ background: GOLD, color: NAVY }}>이어서 읽기</button>
+              <p className="text-slate-500 text-xs">읽던 곳: {CHAPTERS[SCENES[resumable.sceneId].ch].label}</p>
+              <button onClick={beginFresh} className="text-xs underline text-slate-400">처음부터 다시 시작</button>
+            </div>
+          ) : (
+            <button onClick={beginFresh} className="px-10 py-3 rounded-full font-serif text-base" style={{ background: GOLD, color: NAVY }}>이야기를 시작한다</button>
+          )}
           {DEV && (<div className="mt-4"><button onClick={() => { setDraft(verses); setEditing(true); }} className="text-xs underline" style={{ color: GOLD }}>성경 본문(개역개정) 입력하기</button></div>)}
           <p className="text-slate-500 text-xs mt-8 leading-relaxed">‘말씀’ 카드는 개역개정 본문이며, 그 사이의 서술은 이해를 돕기 위한 상상입니다.<br /><span className="block mt-2">사건은 바뀌지 않고, 점수도 없습니다. 은혜는 값없이 주어집니다.</span></p>
         </div>
@@ -276,7 +356,10 @@ export default function GospelGame() {
       {showVerses && (
         <div className="relative px-5 py-4 mx-4 mt-3 rounded-xl" style={{ background: "rgba(255,255,255,0.04)" }}>
           {collected.length === 0 ? <p className="text-slate-400 text-sm">아직 마음에 새긴 말씀이 없습니다.</p> : (
-            <ul className="space-y-2">{collected.map((v, i) => (<li key={i} className="text-sm"><span className="font-serif" style={{ color: GOLD }}>{v.title}</span><span className="text-slate-400"> — {v.note}</span><span className="text-slate-500 text-xs"> ({v.ref})</span></li>))}</ul>
+            <>
+              <ul className="space-y-2">{collected.map((v, i) => (<li key={i} className="text-sm"><span className="font-serif" style={{ color: GOLD }}>{v.title}</span><span className="text-slate-400"> — {v.note}</span><span className="text-slate-500 text-xs"> ({v.ref})</span></li>))}</ul>
+              <button onClick={shareNotes} className="mt-4 text-[11px] px-3 py-1.5 rounded-full border" style={{ borderColor: "rgba(216,179,100,0.4)", color: GOLD }}>{copied ? "복사됨" : "묵상 노트 공유 · 복사"}</button>
+            </>
           )}
         </div>
       )}
@@ -284,7 +367,7 @@ export default function GospelGame() {
       <div className="relative px-6 py-10 max-w-xl mx-auto">
         {scene.ending && <h2 className="font-serif text-2xl text-white text-center mb-6">{scene.title}</h2>}
         <div className="space-y-5">{scene.text.map((p, i) => (<p key={i} className="text-slate-200 leading-loose text-[15px]">{p}</p>))}</div>
-        {scene.verses && <ScriptureCard refs={scene.verses} />}
+        {scene.verses && <ScriptureCard refs={scene.verses} verses={verses} />}
         {scene.collect && <p className="mt-5 text-center text-xs" style={{ color: GOLD }}>✦ 말씀을 마음에 새겼습니다 — {scene.collect.title}</p>}
         {scene.reflect && <ReflectBlock text={scene.reflect} />}
         <div className="mt-10 space-y-3">
@@ -292,7 +375,10 @@ export default function GospelGame() {
             <div className="text-center space-y-5">
               <p className="text-slate-400 text-sm leading-relaxed">긴 여정에서 {collected.length}개의 말씀을 마음에 새겼습니다.<br />아래 말씀을 개역개정 성경에서 직접 펼쳐 읽어 보세요.</p>
               {collected.length > 0 && (<ul className="text-left inline-block space-y-1.5">{collected.map((v, i) => (<li key={i} className="text-sm"><span style={{ color: GOLD }}>✦</span> <span className="text-slate-200">{v.title}</span><span className="text-slate-500 text-xs"> ({v.ref})</span></li>))}</ul>)}
-              <div><button onClick={restart} className="px-8 py-3 rounded-full font-serif" style={{ background: GOLD, color: NAVY }}>다시 길을 걷는다</button></div>
+              <div className="flex flex-wrap gap-3 justify-center">
+                {collected.length > 0 && (<button onClick={shareNotes} className="px-8 py-3 rounded-full font-serif" style={{ border: "1px solid " + GOLD, color: GOLD }}>{copied ? "복사됨" : "묵상 노트 공유"}</button>)}
+                <button onClick={restart} className="px-8 py-3 rounded-full font-serif" style={{ background: GOLD, color: NAVY }}>다시 길을 걷는다</button>
+              </div>
             </div>
           ) : (
             (scene.choices ?? []).map((c, i) => (
