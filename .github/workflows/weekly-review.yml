@@ -9,6 +9,7 @@ on:
 permissions:
   contents: write
   pull-requests: write
+  id-token: write
 
 jobs:
   weekly-review:
@@ -37,8 +38,10 @@ jobs:
       - name: Claude 주간 점검 실행
         uses: anthropics/claude-code-action@beta
         with:
+          mode: agent
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
-          prompt: |
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          direct_prompt: |
             오늘은 ${{ steps.date.outputs.date }} (월요일)입니다. 임마누엘 저장소 주간 점검을 수행해주세요.
 
             ## 점검 규칙
