@@ -158,6 +158,7 @@ export default function GospelGame() {
   const scrollRef = useRef<HTMLDivElement>(null);
 
   const [restored, setRestored] = useState(false);
+  const [resumable, setResumable] = useState<{ sceneId: string; collected: Collect[] } | null>(null);
   const scene = SCENES[sceneId];
   const chapter = scene ? CHAPTERS[scene.ch] : null;
 
@@ -165,28 +166,25 @@ export default function GospelGame() {
     scrollRef.current?.scrollTo({ top: 0, behavior: "smooth" });
   }, [sceneId, started]);
 
-  // 읽던 위치 복원 (재방문 시 이어 읽기)
+  // 저장된 진행 상황 확인 (재방문 시 '이어서 읽기' 제안용 — 자동 시작은 하지 않음)
   useEffect(() => {
     try {
       const raw = localStorage.getItem(PROGRESS_KEY);
       if (raw) {
         const saved = JSON.parse(raw);
-        if (saved && typeof saved.sceneId === "string" && SCENES[saved.sceneId]) {
-          // SSR 안전: 초기 렌더 후 localStorage에서 진행 상황을 한 번 복원한다
-          /* eslint-disable react-hooks/set-state-in-effect */
-          setSceneId(saved.sceneId);
-          if (Array.isArray(saved.collected)) setCollected(saved.collected);
-          if (saved.started) setStarted(true);
-          /* eslint-enable react-hooks/set-state-in-effect */
+        if (saved && saved.started && typeof saved.sceneId === "string" && SCENES[saved.sceneId] && saved.sceneId !== START) {
+          // SSR 안전: 초기 렌더 후 localStorage에서 한 번만 읽어 둔다
+          // eslint-disable-next-line react-hooks/set-state-in-effect
+          setResumable({ sceneId: saved.sceneId, collected: Array.isArray(saved.collected) ? saved.collected : [] });
         }
       }
     } catch {}
     setRestored(true);
   }, []);
 
-  // 진행 상황 저장
+  // 진행 상황 저장 (이야기 진행 중에만 — 시작 화면이 저장본을 덮어쓰지 않도록)
   useEffect(() => {
-    if (!restored) return;
+    if (!restored || !started) return;
     try {
       localStorage.setItem(PROGRESS_KEY, JSON.stringify({ sceneId, collected, started }));
     } catch {}
@@ -220,8 +218,15 @@ export default function GospelGame() {
   }, [sceneId]);
 
   const choose = (next: string) => setSceneId(next);
+  const beginFresh = () => {
+    setSceneId(START); setCollected([]); setResumable(null); setStarted(true);
+  };
+  const resume = () => {
+    if (!resumable) return;
+    setSceneId(resumable.sceneId); setCollected(resumable.collected); setStarted(true);
+  };
   const restart = () => {
-    setSceneId(START); setCollected([]); setStarted(false); setShowVerses(false);
+    setSceneId(START); setCollected([]); setResumable(null); setStarted(false); setShowVerses(false);
     try { localStorage.removeItem(PROGRESS_KEY); } catch {}
   };
 
@@ -303,7 +308,15 @@ export default function GospelGame() {
           <p className="text-slate-400 text-xs mb-5">하나님이 우리와 함께 계시다</p>
           <h1 className="font-serif text-2xl sm:text-3xl text-white leading-snug mb-5">별에서 십자가,<br />그리고 다시 오심</h1>
           <p className="text-slate-300 text-sm leading-relaxed mb-6">한 목자의 아이가 되어 예수님의 탄생부터 사역과 십자가, 부활과 다시 오심의 약속까지 그 길을 함께 걷습니다.</p>
-          <button onClick={() => setStarted(true)} className="px-10 py-3 rounded-full font-serif text-base" style={{ background: GOLD, color: NAVY }}>이야기를 시작한다</button>
+          {resumable ? (
+            <div className="flex flex-col items-center gap-3">
+              <button onClick={resume} className="px-10 py-3 rounded-full font-serif text-base" style={{ background: GOLD, color: NAVY }}>이어서 읽기</button>
+              <p className="text-slate-500 text-xs">읽던 곳: {CHAPTERS[SCENES[resumable.sceneId].ch].label}</p>
+              <button onClick={beginFresh} className="text-xs underline text-slate-400">처음부터 다시 시작</button>
+            </div>
+          ) : (
+            <button onClick={beginFresh} className="px-10 py-3 rounded-full font-serif text-base" style={{ background: GOLD, color: NAVY }}>이야기를 시작한다</button>
+          )}
           {DEV && (<div className="mt-4"><button onClick={() => { setDraft(verses); setEditing(true); }} className="text-xs underline" style={{ color: GOLD }}>성경 본문(개역개정) 입력하기</button></div>)}
           <p className="text-slate-500 text-xs mt-8 leading-relaxed">‘말씀’ 카드는 개역개정 본문이며, 그 사이의 서술은 이해를 돕기 위한 상상입니다.<br /><span className="block mt-2">사건은 바뀌지 않고, 점수도 없습니다. 은혜는 값없이 주어집니다.</span></p>
         </div>
